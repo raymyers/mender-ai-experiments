@@ -1,5 +1,5 @@
-marvin
 openai
 watchdog
 rope
 pytest
+instructor

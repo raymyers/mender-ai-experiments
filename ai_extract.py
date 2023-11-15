@@ -3,16 +3,18 @@ import os
 import rope.base.project
 from rope.base import libutils
 from rope.refactor import extract
-from marvin import ai_fn
-import marvin
+import instructor
 from retry import retry
 from pydantic import BaseModel, Field, ValidationError
-from openai.error import Timeout
+from openai import OpenAI, APITimeoutError
 
-def init_marvin():
-    marvin.settings.llm_model = "openai/gpt-4-1106-preview" # 4 Turbo
-    marvin.settings.llm_temperature = 0.2
-    marvin.settings.llm_request_timeout_seconds = 30
+# Enables `response_model`
+OPENAI_CLIENT = None
+MODEL = "gpt-4-1106-preview" # 4 Turbo
+
+def init_openai():
+    global OPENAI_CLIENT
+    OPENAI_CLIENT = instructor.patch(OpenAI(timeout=30.0))
 
 def convert_line_range_to_offset(code, start, end):
     lines = rope.base.codeanalyze.SourceLinesAdapter(code)
@@ -42,15 +44,30 @@ class ExtractSuggestion(BaseModel):
         1 = little to none, 2 = some, 3 = large improvement
     """)
 
-@ai_fn
-@retry((ValidationError, Timeout), tries=3, delay=1)
+class ExtractSuggestions(BaseModel):
+    suggestions: list[ExtractSuggestion]
+
+@retry((ValidationError, APITimeoutError), tries=3, delay=1)
 def suggest_extract(
-    code, hints
+    code
 ) -> list[ExtractSuggestion]:
-    """
+    prompt = f"""
 In the provided Python code, identify 4 extract method opportunities for a refactoring tool.
 Suggest names that clearly describes the contents and avoid collision with other methods already present.
+    
+```
+{code}
+```
     """
+    response = OPENAI_CLIENT.chat.completions.create(
+        model=MODEL,
+        response_model=ExtractSuggestions,
+        temperature = 0.2,
+        messages=[
+            {"role": "user", "content": prompt},
+        ]
+    )
+    return response.suggestions
 
 def select_suggestion(lines, suggestions: list[ExtractSuggestion]) -> ExtractSuggestion | None:
     suggestions = sorted(suggestions, key=lambda suggestion: -suggestion.rating)
@@ -72,16 +89,6 @@ def select_suggestion(lines, suggestions: list[ExtractSuggestion]) -> ExtractSug
             return suggestion
     return None
 
-def assemble_hints(start_line, end_line, name) -> dict:
-    hints = {}
-    if start_line:
-        hints['start_line'] = start_line
-    if end_line:
-        hints['end_line'] = end_line
-    if name:
-        hints['name'] = name
-    return hints
-
 def run_extract(file_name: str, line_range: str, name: str, project: str, ai: bool):
     start_line, end_line = parse_line_range(line_range)
     project = rope.base.project.Project(project)
@@ -90,8 +97,7 @@ def run_extract(file_name: str, line_range: str, name: str, project: str, ai: bo
     code_lines_with_numbers = render_lines_with_numbers(code.splitlines(True))
     if ai:
         print("AI suggesting...")
-        hints = assemble_hints(start_line, end_line, name)
-        suggestions = suggest_extract(''.join(code_lines_with_numbers), hints)
+        suggestions = suggest_extract(''.join(code_lines_with_numbers))
         suggestion = select_suggestion(code_lines_with_numbers, suggestions)
         if not suggestion:
             print("No suggestion")
@@ -118,16 +124,13 @@ def run_extract(file_name: str, line_range: str, name: str, project: str, ai: bo
     return True
 
 
-
-
-
 def cli():
     parser = argparse.ArgumentParser(description='Extract method in python.')
     parser.add_argument('file', help='File to refactor')
     parser.add_argument('--project', help='Project directory (defaults to file dir)')
     parser.add_argument('-r', '--range', required=False, help='Line range, like 1-10. One indexed, inclusive.)')
     parser.add_argument('-n', '--name', required=False, help='Method name')
-    parser.add_argument('--ai', required=False, help='Use GPT, with args as hints', action='store_true')
+    parser.add_argument('--ai', required=False, help='Use GPT for name and range', action='store_true')
 
     args = parser.parse_args()
     project = args.project or os.path.dirname(os.path.abspath(args.file))
@@ -142,5 +145,5 @@ def cli():
         exit(1)
 
 if __name__ == '__main__':
-    init_marvin()
+    init_openai()
     cli()
