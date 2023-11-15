@@ -1,3 +1,5 @@
 # Mender.AI Experiments
 
-For now, checkout [Mender.AI](Mender.AI) to see what this is all about.
+Explorations in AI-assisted code refactoring.
+
+For now, checkout [Mender.AI](https://mender.ai) to see what this is all about.
